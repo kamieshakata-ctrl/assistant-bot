@@ -15,7 +15,14 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 import openpyxl
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    BotCommand,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -199,17 +206,29 @@ def _is_meishi_allowed(update: Update) -> bool:
     return username in MEISHI_ALLOWED_USERS
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # 名刺作成ボタンは許可ユーザーのみに表示
-    keyboard = []
-    if _is_meishi_allowed(update):
-        keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
-    keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
-    keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+def _make_reply_keyboard() -> ReplyKeyboardMarkup:
+    """常時表示するキーボードメニューを生成する"""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🏦 支払い依頼"), KeyboardButton("📝 稼働データ入力")],
+            [KeyboardButton("📋 メニューを表示")],
+        ],
+        resize_keyboard=True,
+        persistent=True,
+    )
 
-    # ウェルカムメッセージを送信
-    await update.message.reply_text(WELCOME_MESSAGE)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # 名刺作成ボタンは許可ユーザーのみに表示（インラインボタン）
+    inline_keyboard = []
+    if _is_meishi_allowed(update):
+        inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
+    inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
+    inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
+    inline_markup = InlineKeyboardMarkup(inline_keyboard)
+
+    # ウェルカムメッセージを送信（常時表示キーボードメニューも同時に設置）
+    await update.message.reply_text(WELCOME_MESSAGE, reply_markup=_make_reply_keyboard())
 
     # お仕事の流れインフォグラフィック画像を送信
     try:
@@ -218,10 +237,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"お仕事の流れ画像の送信に失敗: {e}")
 
-    # メニューボタンを送信
+    # インラインボタンメニューを送信
     await update.message.reply_text(
-        "メニューを選択してください：",
-        reply_markup=reply_markup,
+        "↓ 以下のボタンから選択してください：",
+        reply_markup=inline_markup,
     )
 
 
@@ -845,11 +864,59 @@ async def report_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
 # メイン
 # ═══════════════════════════════════════════════════════════════════════════
 
+async def post_init(application: Application) -> None:
+    """起動時にset_my_commandsでコマンドメニューを登録する"""
+    commands = [
+        BotCommand("start", "メニューを表示する"),
+        BotCommand("menu", "メニューを表示する"),
+        BotCommand("transfer", "支払い依頼フォーム"),
+        BotCommand("report", "稼働データ入力フォーム"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("Bot commands registered.")
+
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/menuコマンドやキーボードボタンからインラインメニューを表示する"""
+    inline_keyboard = []
+    if _is_meishi_allowed(update):
+        inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
+    inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
+    inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
+    inline_markup = InlineKeyboardMarkup(inline_keyboard)
+    msg = update.message or (update.callback_query and update.callback_query.message)
+    if msg:
+        await msg.reply_text(
+            "↓ 以下のボタンから選択してください：",
+            reply_markup=inline_markup,
+        )
+
+
+async def _keyboard_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """常時表示キーボードのボタンテキストに応じて各機能を起動する"""
+    text = update.message.text
+    if text == "🏦 支払い依頼":
+        await start_transfer(update, context)
+    elif text == "📝 稼働データ入力":
+        await start_report(update, context)
+    else:  # "📋 メニューを表示"
+        await show_menu(update, context)
+
+
 def main() -> None:
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # /start コマンド
     app.add_handler(CommandHandler("start", start))
+
+    # /menu コマンド
+    app.add_handler(CommandHandler("menu", show_menu))
+
+    # キーボード「📋 メニューを表示」ボタンのハンドラ（インラインメニューを表示）
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^📋 メニューを表示$"),
+        show_menu,
+    ))
 
     # 名刺作成 ConversationHandler
     meishi_conv = ConversationHandler(
@@ -869,7 +936,11 @@ def main() -> None:
 
     # 支払い依頼 ConversationHandler
     transfer_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_transfer, pattern="^menu_transfer$")],
+        entry_points=[
+            CallbackQueryHandler(start_transfer, pattern="^menu_transfer$"),
+            CommandHandler("transfer", start_transfer),
+            MessageHandler(filters.TEXT & filters.Regex(r"^🏦 支払い依頼$"), start_transfer),
+        ],
         states={
             TRANSFER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_name)],
             TRANSFER_BANK: [CallbackQueryHandler(transfer_bank_callback, pattern="^(bank_|transfer_cancel)")],
@@ -895,7 +966,11 @@ def main() -> None:
 
     # 稼働報告 ConversationHandler
     report_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_report, pattern="^menu_report$")],
+        entry_points=[
+            CallbackQueryHandler(start_report, pattern="^menu_report$"),
+            CommandHandler("report", start_report),
+            MessageHandler(filters.TEXT & filters.Regex(r"^📝 稼働データ入力$"), start_report),
+        ],
         states={
             REPORT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, report_name)],
             REPORT_SHOP: [CallbackQueryHandler(report_shop_callback, pattern="^shop_")],
