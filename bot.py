@@ -32,6 +32,7 @@ from meishi_generator import create_business_card
 # ── Configuration ──────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8789721641:AAFKm0JIBMZKcIhqc6htSgnwl3fvTj2PY2c")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "104JfX8b4VuE6T2yGKI6hLL58z3gZSKQ339TLnQ_Y2iI")
+TRANSFER_NOTIFY_GROUP_ID = int(os.environ.get("TRANSFER_NOTIFY_GROUP_ID", "-5006222520"))  # 振込依頼通知先グループ
 RCLONE_CONFIG = os.environ.get("RCLONE_CONFIG", "/home/ubuntu/.gdrive-rclone.ini")
 GDRIVE_ACCESS_TOKEN = os.environ.get("GDRIVE_ACCESS_TOKEN", "")
 JST = timezone(timedelta(hours=9))
@@ -71,15 +72,30 @@ REPORT_CONFIRM = 308
 
 # ── Google Drive helpers ───────────────────────────────────────────────────
 def get_access_token() -> str:
+    """Google Drive APIのアクセストークンを取得する"""
+    # 1. GDRIVE_ACCESS_TOKEN 環境変数（直接トークン文字列）
     if GDRIVE_ACCESS_TOKEN:
         return GDRIVE_ACCESS_TOKEN
-    result = subprocess.run(
-        ["rclone", "config", "dump", "--config", RCLONE_CONFIG],
-        capture_output=True, text=True,
-    )
-    config = json.loads(result.stdout)
-    token_data = json.loads(config["manus_google_drive"]["token"])
-    return token_data["access_token"]
+    # 2. GDRIVE_TOKEN 環境変数（JSON形式のトークン）
+    gdrive_token_json = os.environ.get("GDRIVE_TOKEN", "")
+    if gdrive_token_json:
+        try:
+            token_data = json.loads(gdrive_token_json)
+            return token_data.get("access_token", "")
+        except (json.JSONDecodeError, KeyError):
+            pass
+    # 3. rclone設定からの取得（ローカル環境用）
+    try:
+        result = subprocess.run(
+            ["rclone", "config", "dump", "--config", RCLONE_CONFIG],
+            capture_output=True, text=True,
+        )
+        config = json.loads(result.stdout)
+        token_data = json.loads(config["manus_google_drive"]["token"])
+        return token_data["access_token"]
+    except Exception as e:
+        logger.error(f"アクセストークン取得エラー: {e}")
+        return ""
 
 
 def download_spreadsheet() -> openpyxl.Workbook:
@@ -164,6 +180,10 @@ auショップでこちらが指定する会社名義でiPhoneを契約してい
 問題無ければ、メニューの方の代行登録フォームからご登録にお進みください。"""
 
 
+# お仕事の流れ画像パス
+OSHIGOTO_FLOW_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "oshigoto_flow.jpg")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("🪪 名刺の自動作成", callback_data="menu_meishi")],
@@ -171,7 +191,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # ウェルカムメッセージを送信
     await update.message.reply_text(WELCOME_MESSAGE)
+
+    # お仕事の流れインフォグラフィック画像を送信
+    try:
+        with open(OSHIGOTO_FLOW_IMAGE, "rb") as photo:
+            await update.message.reply_photo(photo=photo)
+    except Exception as e:
+        logger.error(f"お仕事の流れ画像の送信に失敗: {e}")
+
+    # メニューボタンを送信
     await update.message.reply_text(
         "メニューを選択してください：",
         reply_markup=reply_markup,
@@ -179,16 +210,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ConversationHandlerに属さないメニューコールバック用（フォールバック）"""
     query = update.callback_query
     await query.answer()
     data = query.data
 
     if data == "menu_meishi":
-        await start_meishi(update, context)
+        return await start_meishi(update, context)
     elif data == "menu_transfer":
-        await start_transfer(update, context)
+        return await start_transfer(update, context)
     elif data == "menu_report":
-        await start_report(update, context)
+        return await start_report(update, context)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -209,7 +241,7 @@ async def start_meishi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await msg.edit_text("❌ 法人一覧の取得に失敗しました。")
         return ConversationHandler.END
 
-    context.user_data["hojin_list"] = hojin_list
+    context.user_data["hojin_list"] = list(reversed(hojin_list))  # 新しい法人が先頭に来るよう逆順
     context.user_data["meishi_page"] = 0
     await msg.delete()
     return await show_meishi_page(update, context, query.message)
@@ -491,6 +523,28 @@ async def transfer_confirm_callback(update: Update, context: ContextTypes.DEFAUL
         ws.append([now, t["name"], t["bank"], t["branch"], t["type"], t["account"], t["amount"]])
         upload_spreadsheet(wb)
         await query.message.edit_text("✅ 振込依頼を送信しました。")
+
+        # ── 振込依頼内容をグループに自動転送 ──────────────────────────────
+        notify_text = (
+            f"💰 **振込依頼が届きました**\n\n"
+            f"受付日時：{now}\n"
+            f"お名前：{t['name']}\n"
+            f"銀行名：{t['bank']}\n"
+            f"支店名：{t['branch']}\n"
+            f"口座種別：{t['type']}\n"
+            f"口座番号：{t['account']}\n"
+            f"振込金額：¥{t['amount']:,}"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=TRANSFER_NOTIFY_GROUP_ID,
+                text=notify_text,
+                parse_mode="Markdown",
+            )
+            logger.info(f"振込依頼をグループ {TRANSFER_NOTIFY_GROUP_ID} に転送しました")
+        except Exception as notify_err:
+            logger.error(f"グループへの転送に失敗しました: {notify_err}")
+
     except Exception as e:
         logger.error(f"振込依頼送信エラー: {e}")
         await query.message.edit_text(f"❌ 送信に失敗しました: {e}")
@@ -772,16 +826,16 @@ def main() -> None:
     # /start コマンド
     app.add_handler(CommandHandler("start", start))
 
-    # メニューコールバック
-    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
-
     # 名刺作成 ConversationHandler
     meishi_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_meishi, pattern="^menu_meishi$")],
         states={
             MEISHI_SELECT: [CallbackQueryHandler(meishi_callback, pattern="^meishi_")],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(menu_callback, pattern="^menu_"),
+        ],
         per_user=True,
         per_chat=True,
         allow_reentry=True,
@@ -804,7 +858,10 @@ def main() -> None:
             TRANSFER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_amount)],
             TRANSFER_CONFIRM: [CallbackQueryHandler(transfer_confirm_callback, pattern="^transfer_")],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(menu_callback, pattern="^menu_"),
+        ],
         per_user=True,
         per_chat=True,
         allow_reentry=True,
@@ -825,12 +882,18 @@ def main() -> None:
             REPORT_ADD_MORE: [CallbackQueryHandler(report_add_more_callback, pattern="^(model_|report_cancel)")],
             REPORT_CONFIRM: [CallbackQueryHandler(report_confirm_callback, pattern="^report_")],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(menu_callback, pattern="^menu_"),
+        ],
         per_user=True,
         per_chat=True,
         allow_reentry=True,
     )
     app.add_handler(report_conv)
+
+    # メニューコールバック（ConversationHandlerにマッチしない場合のフォールバック）
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
 
     logger.info("Bot started.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
