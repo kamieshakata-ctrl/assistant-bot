@@ -83,14 +83,8 @@ REPORT_ADD_MORE = 307
 REPORT_CONFIRM = 308
 
 # 代行登録
-REG_NAME = 400
-REG_PHONE = 401
-REG_ADDRESS = 402
-REG_BANK = 403
-REG_BANK_SEARCH = 404
-REG_BRANCH = 405
-REG_ACCOUNT = 406
-REG_CONFIRM = 407
+REG_INFO = 400   # 名前/稼働エリア入力
+REG_ID_PHOTO = 401  # 身分証写真送信
 
 
 # ── Google Drive helpers ───────────────────────────────────────────────────
@@ -866,162 +860,63 @@ async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data["register"] = {}
     msg_text = (
         "📝 **代行登録フォーム**\n\n"
-        "お名前（氏名）を入力してください："
+        "名前と稼働エリアを入力してください。\n"
+        "例）加賀谷商事/広島県呉市"
     )
     if update.callback_query:
         await update.callback_query.message.reply_text(msg_text, parse_mode="Markdown")
     else:
         await update.message.reply_text(msg_text, parse_mode="Markdown")
-    return REG_NAME
+    return REG_INFO
 
 
-async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["register"]["name"] = update.message.text.strip()
-    await update.message.reply_text("電話番号を入力してください：")
-    return REG_PHONE
-
-
-async def reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["register"]["phone"] = update.message.text.strip()
-    await update.message.reply_text("住所（都道府県から番地まで）を入力してください：")
-    return REG_ADDRESS
-
-
-async def reg_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["register"]["address"] = update.message.text.strip()
-    # 銀行名入力へ
-    keyboard = []
-    row = []
-    for i, bank in enumerate(MAJOR_BANKS):
-        row.append(InlineKeyboardButton(bank, callback_data=f"reg_bank_{bank}"))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🔍 銀行を検索", callback_data="reg_bank_search")])
-    keyboard.append([InlineKeyboardButton("❌ キャンセル", callback_data="reg_cancel")])
+async def reg_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """名前/稼働エリア入力を受け取る"""
+    text = update.message.text.strip()
+    # 「/」で分割
+    if "/" in text:
+        parts = text.split("/", 1)
+        context.user_data["register"]["name"] = parts[0].strip()
+        context.user_data["register"]["area"] = parts[1].strip()
+    else:
+        # 分割できない場合はそのまま保存
+        context.user_data["register"]["name"] = text
+        context.user_data["register"]["area"] = ""
     await update.message.reply_text(
-        "口座の銀行を選択してください：",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "📷 身分証の写真を送信してください。"
     )
-    return REG_BANK
+    return REG_ID_PHOTO
 
 
-async def reg_bank_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "reg_cancel":
-        await query.message.edit_text("❌ キャンセルしました。")
-        return ConversationHandler.END
-
-    if data == "reg_bank_search":
-        await query.message.edit_text("🔍 銀行名の一部を入力してください（例：「三菱」「信金」など）：")
-        return REG_BANK_SEARCH
-
-    if data.startswith("reg_bank_"):
-        bank_name = data[9:]
-        context.user_data["register"]["bank"] = bank_name
-        await query.message.edit_text(f"✅ 銀行名：{bank_name}\n\n支店名を入力してください：")
-        return REG_BRANCH
-
-    return REG_BANK
-
-
-async def reg_bank_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyword = update.message.text.strip()
-    results = search_banks(keyword)
-
-    if not results:
-        await update.message.reply_text(
-            f"「{keyword}」に一致する銀行が見つかりませんでした。\n別のキーワードを入力してください："
-        )
-        return REG_BANK_SEARCH
-
-    keyboard = []
-    for bank in results[:10]:
-        keyboard.append([InlineKeyboardButton(bank, callback_data=f"reg_bank_{bank}")])
-    keyboard.append([InlineKeyboardButton("🔍 再検索", callback_data="reg_bank_search")])
-    keyboard.append([InlineKeyboardButton("❌ キャンセル", callback_data="reg_cancel")])
-    await update.message.reply_text(
-        f"「{keyword}」の検索結果：",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return REG_BANK
-
-
-async def reg_branch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["register"]["branch"] = update.message.text.strip()
-    context.user_data["register"]["account_type"] = "普通"  # 口座種別は普通固定
-    await update.message.reply_text("口座番号を入力してください：")
-    return REG_ACCOUNT
-
-
-async def reg_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["register"]["account"] = update.message.text.strip()
+async def reg_id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """身分証写真を受け取りスプレッドシートに保存する"""
+    user = update.message.from_user
+    tg_user_id = str(user.id)
+    tg_username = f"@{user.username}" if user.username else ""
     r = context.user_data["register"]
-    confirm_text = (
-        f"📋 **代行登録内容の確認**\n\n"
-        f"お名前：{r['name']}\n"
-        f"電話番号：{r['phone']}\n"
-        f"住所：{r['address']}\n"
-        f"銀行名：{r['bank']}\n"
-        f"支店名：{r['branch']}\n"
-        f"口座種別：{r['account_type']}\n"
-        f"口座番号：{r['account']}\n\n"
-        f"この内容で登録しますか？"
-    )
-    keyboard = [[
-        InlineKeyboardButton("✅ 登録する", callback_data="reg_submit"),
-        InlineKeyboardButton("❌ キャンセル", callback_data="reg_cancel"),
-    ]]
-    await update.message.reply_text(
-        confirm_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
-    )
-    return REG_CONFIRM
-
-
-async def reg_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "reg_cancel":
-        await query.message.edit_text("❌ キャンセルしました。")
-        return ConversationHandler.END
-
-    r = context.user_data["register"]
-    user = query.from_user
-    tg_username = f"@{user.username}" if user.username else str(user.id)
 
     try:
         wb = download_spreadsheet()
         ws = get_or_create_sheet(
             wb, "代行登録",
-            ["タイムスタンプ", "TGユーザー名", "お名前", "電話番号", "住所", "銀行名", "支店名", "口座種別", "口座番号"]
+            ["タイムスタンプ", "TGユーザーID", "TGユーザー名", "名前", "稼働エリア", "身分証"]
         )
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
         ws.append([
             now,
+            tg_user_id,
             tg_username,
-            r["name"],
-            r["phone"],
-            r["address"],
-            r["bank"],
-            r["branch"],
-            r["account_type"],
-            r["account"],
+            r.get("name", ""),
+            r.get("area", ""),
+            "送信済み",
         ])
         upload_spreadsheet(wb)
-        await query.message.edit_text(
+        await update.message.reply_text(
             "✅ 登録が完了しました！\n担当者からご連絡いたします。しばらくお待ちください。"
         )
     except Exception as e:
         logger.error(f"代行登録保存エラー: {e}")
-        await query.message.edit_text(f"❌ 登録に失敗しました: {e}")
+        await update.message.reply_text(f"❌ 登録に失敗しました: {e}")
 
     return ConversationHandler.END
 
@@ -1164,17 +1059,8 @@ def main() -> None:
             CommandHandler("register", start_register),
         ],
         states={
-            REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
-            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_phone)],
-            REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_address)],
-            REG_BANK: [CallbackQueryHandler(reg_bank_callback, pattern="^(reg_bank_|reg_cancel)")],
-            REG_BANK_SEARCH: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, reg_bank_search),
-                CallbackQueryHandler(reg_bank_callback, pattern="^(reg_bank_|reg_cancel)"),
-            ],
-            REG_BRANCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_branch)],
-            REG_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_account)],
-            REG_CONFIRM: [CallbackQueryHandler(reg_confirm_callback, pattern="^reg_")],
+            REG_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_info)],
+            REG_ID_PHOTO: [MessageHandler(filters.PHOTO, reg_id_photo)],
         },
         fallbacks=[
             CommandHandler("start", start),
