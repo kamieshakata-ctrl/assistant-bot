@@ -10,11 +10,9 @@ import io
 import json
 import logging
 import os
-import subprocess
 from datetime import datetime, timezone, timedelta
 
 import requests
-import openpyxl
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -46,8 +44,7 @@ MEISHI_ALLOWED_USERS: set[str] = set(
     for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345,ks19970606").split(",")
     if u.strip()
 )
-RCLONE_CONFIG = os.environ.get("RCLONE_CONFIG", "/home/ubuntu/.gdrive-rclone.ini")
-GDRIVE_ACCESS_TOKEN = os.environ.get("GDRIVE_ACCESS_TOKEN", "")
+GAS_URL = os.environ.get("GAS_URL", "")  # Google Apps Script Web App URL
 JST = timezone(timedelta(hours=9))
 
 logging.basicConfig(
@@ -60,6 +57,7 @@ logger = logging.getLogger(__name__)
 # 名刺作成
 MEISHI_SELECT = 100
 MEISHI_PAGE = 101
+MEISHI_NAME = 102  # 担当者名入力ステップ
 
 # 支払い依頼
 TRANSFER_NAME = 200
@@ -87,93 +85,53 @@ REG_INFO = 400   # 名前/稼働エリア入力
 REG_ID_PHOTO = 401  # 身分証写真送信
 
 
-# ── Google Drive helpers ───────────────────────────────────────────────────
-def get_access_token() -> str:
-    """Google Drive APIのアクセストークンを取得する"""
-    # 1. GDRIVE_ACCESS_TOKEN 環境変数（直接トークン文字列）
-    if GDRIVE_ACCESS_TOKEN:
-        return GDRIVE_ACCESS_TOKEN
-    # 2. GDRIVE_TOKEN 環境変数（JSON形式のトークン）
-    gdrive_token_json = os.environ.get("GDRIVE_TOKEN", "")
-    if gdrive_token_json:
-        try:
-            token_data = json.loads(gdrive_token_json)
-            return token_data.get("access_token", "")
-        except (json.JSONDecodeError, KeyError):
-            pass
-    # 3. rclone設定からの取得（ローカル環境用）
-    try:
-        result = subprocess.run(
-            ["rclone", "config", "dump", "--config", RCLONE_CONFIG],
-            capture_output=True, text=True,
-        )
-        config = json.loads(result.stdout)
-        token_data = json.loads(config["manus_google_drive"]["token"])
-        return token_data["access_token"]
-    except Exception as e:
-        logger.error(f"アクセストークン取得エラー: {e}")
-        return ""
-
-
-def download_spreadsheet() -> openpyxl.Workbook:
-    token = get_access_token()
-    url = (
-        f"https://www.googleapis.com/drive/v3/files/{SPREADSHEET_ID}/export"
-        f"?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+# ── Google Apps Script helpers ────────────────────────────────────────────
+def gas_read(sheet_name: str) -> list:
+    """Apps Script経由でシートのデータを取得する"""
+    if not GAS_URL:
+        raise RuntimeError("GAS_URL が設定されていません")
+    resp = requests.get(GAS_URL, params={"action": "read", "sheet": sheet_name}, timeout=30)
     resp.raise_for_status()
-    return openpyxl.load_workbook(io.BytesIO(resp.content))
+    result = resp.json()
+    if not result.get("ok"):
+        raise RuntimeError(f"GAS error: {result.get('error')}")
+    return result.get("data", [])
 
 
-def upload_spreadsheet(wb: openpyxl.Workbook) -> None:
-    token = get_access_token()
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    url = (
-        f"https://www.googleapis.com/upload/drive/v3/files/{SPREADSHEET_ID}"
-        f"?uploadType=media&convert=true"
-    )
-    requests.patch(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        },
-        data=buf.read(),
-    )
-
-
-def get_or_create_sheet(wb: openpyxl.Workbook, sheet_name: str, headers: list) -> openpyxl.worksheet.worksheet.Worksheet:
-    if sheet_name not in wb.sheetnames:
-        ws = wb.create_sheet(sheet_name)
-        ws.append(headers)
-    else:
-        ws = wb[sheet_name]
-    return ws
+def gas_append(sheet_name: str, headers: list, row: list) -> None:
+    """Apps Script経由でシートに行を追加する"""
+    if not GAS_URL:
+        raise RuntimeError("GAS_URL が設定されていません")
+    payload = {
+        "action": "append",
+        "sheet": sheet_name,
+        "headers": headers,
+        "row": row,
+    }
+    resp = requests.post(GAS_URL, json=payload, timeout=30)
+    resp.raise_for_status()
+    result = resp.json()
+    if not result.get("ok"):
+        raise RuntimeError(f"GAS error: {result.get('error')}")
 
 
 # ── 法人一覧取得 ───────────────────────────────────────────────────────────
 def get_hojin_list() -> list[dict]:
-    """スプレッドシートの法人一覧シートから法人データを取得する"""
+    """スプレッドシートの法人一覧シートから法人データを取得する（Apps Script経由）"""
     try:
-        wb = download_spreadsheet()
-        if "法人一覧シート" not in wb.sheetnames:
-            return []
-        ws = wb["法人一覧シート"]
+        rows = gas_read("法人一覧シート")
         hojin_list = []
-        for row in ws.iter_rows(min_row=3, max_row=ws.max_row, values_only=True):
-            if row[1]:  # B列: 法人名
+        for row in rows[2:]:  # 1行目はヘッダー、2行目はサブヘッダー
+            if len(row) > 1 and row[1]:  # B列: 法人名
                 hojin = {
                     "name": str(row[1]),
-                    "zip": str(row[2]) if row[2] and not str(row[2]).startswith("=") else "",
-                    "pref": str(row[3]) if row[3] else "",
-                    "city": str(row[4]) if row[4] else "",
-                    "addr": str(row[5]) if row[5] else "",
-                    "tel": str(row[6]) if row[6] else "",
-                    "email": str(row[7]) if row[7] else "",
-                    "tantousha": str(row[9]) if row[9] else "",
+                    "zip": str(row[2]) if len(row) > 2 and row[2] and not str(row[2]).startswith("=") else "",
+                    "pref": str(row[3]) if len(row) > 3 and row[3] else "",
+                    "city": str(row[4]) if len(row) > 4 and row[4] else "",
+                    "addr": str(row[5]) if len(row) > 5 and row[5] else "",
+                    "tel": str(row[6]) if len(row) > 6 and row[6] else "",
+                    "email": str(row[7]) if len(row) > 7 and row[7] else "",
+                    "tantousha": str(row[9]) if len(row) > 9 and row[9] else "",
                 }
                 hojin_list.append(hojin)
         return hojin_list
@@ -367,48 +325,66 @@ async def meishi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.edit_text("❌ エラーが発生しました。")
             return ConversationHandler.END
 
+        # 選択した法人を保存し、担当者名入力ステップへ
         hojin = hojin_list[idx]
-        await query.message.edit_text(f"⏳ 「{hojin['name']}」の名刺を生成中...")
-
-        try:
-            # 住所を組み立て
-            address_parts = [hojin["pref"], hojin["city"], hojin["addr"]]
-            address = "".join(p for p in address_parts if p)
-
-            # 名刺PNG生成
-            png_data = create_business_card(
-                hojin_name=hojin["name"],
-                tel=hojin["tel"],
-                address=address,
-                tantousha=hojin["tantousha"],
-            )
-
-            # 送信
-            from meishi_generator import generate_email
-            email = generate_email(hojin["name"])
-
-            caption = (
-                f"🪪 **{hojin['name']}**\n"
-                f"担当者: {hojin['tantousha'] or '未設定'}\n"
-                f"TEL: {hojin['tel'] or '未設定'}\n"
-                f"MAIL: {email}\n"
-                f"住所: {address or '未設定'}"
-            )
-
-            await query.message.reply_photo(
-                photo=io.BytesIO(png_data),
-                caption=caption,
-                parse_mode="Markdown",
-            )
-            await query.message.edit_text("✅ 名刺を生成しました。")
-
-        except Exception as e:
-            logger.error(f"名刺生成エラー: {e}")
-            await query.message.edit_text(f"❌ 名刺の生成に失敗しました: {e}")
-
-        return ConversationHandler.END
+        context.user_data["meishi_selected_hojin"] = hojin
+        await query.message.edit_text(
+            f"📝 **{hojin['name']}** の名刺を作成します。\n\n"
+            f"担当者名を入力してください：",
+            parse_mode="Markdown",
+        )
+        return MEISHI_NAME
 
     return MEISHI_SELECT
+
+
+async def meishi_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """担当者名入力を受け取り名刺を生成する"""
+    tantousha = update.message.text.strip()
+    hojin = context.user_data.get("meishi_selected_hojin", {})
+
+    if not hojin:
+        await update.message.reply_text("❌ エラーが発生しました。最初からやり直してください。")
+        return ConversationHandler.END
+
+    msg = await update.message.reply_text(f"⏳ 「{hojin['name']}」 / 担当者: {tantousha} の名刺を生成中...")
+
+    try:
+        # 住所を組み立て
+        address_parts = [hojin.get("pref", ""), hojin.get("city", ""), hojin.get("addr", "")]
+        address = "".join(p for p in address_parts if p)
+
+        # 名刺PNG生成（入力された担当者名を使用）
+        png_data = create_business_card(
+            hojin_name=hojin["name"],
+            tel=hojin.get("tel", ""),
+            address=address,
+            tantousha=tantousha,
+        )
+
+        from meishi_generator import generate_email
+        email = generate_email(hojin["name"])
+
+        caption = (
+            f"🪦 **{hojin['name']}**\n"
+            f"担当者: {tantousha}\n"
+            f"TEL: {hojin.get('tel', '') or '未設定'}\n"
+            f"MAIL: {email}\n"
+            f"住所: {address or '未設定'}"
+        )
+
+        await update.message.reply_photo(
+            photo=io.BytesIO(png_data),
+            caption=caption,
+            parse_mode="Markdown",
+        )
+        await msg.edit_text("✅ 名刺を生成しました。")
+
+    except Exception as e:
+        logger.error(f"名刺生成エラー: {e}")
+        await msg.edit_text(f"❌ 名刺の生成に失敗しました: {e}")
+
+    return ConversationHandler.END
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -556,14 +532,12 @@ async def transfer_confirm_callback(update: Update, context: ContextTypes.DEFAUL
 
     t = context.user_data["transfer"]
     try:
-        wb = download_spreadsheet()
-        ws = get_or_create_sheet(
-            wb, "支払い依頼",
-            ["タイムスタンプ", "お名前", "銀行名", "支店名", "口座種別", "口座番号", "振込金額"]
-        )
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-        ws.append([now, t["name"], t["bank"], t["branch"], t["type"], t["account"], t["amount"]])
-        upload_spreadsheet(wb)
+        gas_append(
+            "支払い依頼",
+            ["タイムスタンプ", "お名前", "銀行名", "支店名", "口座種別", "口座番号", "振込金額"],
+            [now, t["name"], t["bank"], t["branch"], t["type"], t["account"], t["amount"]],
+        )
         await query.message.edit_text("✅ 振込依頼を送信しました。")
 
         # ── 振込依頼内容をグループに自動転送 ──────────────────────────────
@@ -842,14 +816,12 @@ async def report_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
     iphone_detail = " / ".join([f"{ip['model']} {ip['capacity']} × {ip['qty']}台" for ip in iphones])
 
     try:
-        wb = download_spreadsheet()
-        ws = get_or_create_sheet(
-            wb, "稼働データ",
-            ["タイムスタンプ", "稼働者名", "稼働店舗数", "稼働日", "iPhone詳細"]
-        )
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-        ws.append([now, r["name"], r["shops"], r["date"], iphone_detail])
-        upload_spreadsheet(wb)
+        gas_append(
+            "稼働データ",
+            ["タイムスタンプ", "稼働者名", "稼働店舗数", "稼働日", "iPhone詳細"],
+            [now, r["name"], r["shops"], r["date"], iphone_detail],
+        )
         await query.message.edit_text("✅ 稼働データを送信しました。")
     except Exception as e:
         logger.error(f"稼働報告送信エラー: {e}")
@@ -903,21 +875,12 @@ async def reg_id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     r = context.user_data["register"]
 
     try:
-        wb = download_spreadsheet()
-        ws = get_or_create_sheet(
-            wb, "代行登録",
-            ["タイムスタンプ", "TGユーザーID", "TGユーザー名", "名前", "稼働エリア", "身分証"]
-        )
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-        ws.append([
-            now,
-            tg_user_id,
-            tg_username,
-            r.get("name", ""),
-            r.get("area", ""),
-            "送信済み",
-        ])
-        upload_spreadsheet(wb)
+        gas_append(
+            "代行登録",
+            ["タイムスタンプ", "TGユーザーID", "TGユーザー名", "名前", "稼働エリア", "身分証"],
+            [now, tg_user_id, tg_username, r.get("name", ""), r.get("area", ""), "送信済み"],
+        )
         await update.message.reply_text(
             "✅ 登録が完了しました！\n担当者からご連絡いたします。しばらくお待ちください。"
         )
@@ -992,6 +955,7 @@ def main() -> None:
         entry_points=[CallbackQueryHandler(start_meishi, pattern="^menu_meishi$")],
         states={
             MEISHI_SELECT: [CallbackQueryHandler(meishi_callback, pattern="^meishi_")],
+            MEISHI_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, meishi_name_input)],
         },
         fallbacks=[
             CommandHandler("start", start),
