@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 import requests
+from openai import OpenAI
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -45,7 +46,43 @@ MEISHI_ALLOWED_USERS: set[str] = set(
     if u.strip()
 )
 GAS_URL = os.environ.get("GAS_URL", "")  # Google Apps Script Web App URL
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 JST = timezone(timedelta(hours=9))
+
+# ── OpenAI クライアント ──────────────────────────────────────────────────
+openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL) if OPENAI_API_KEY else None
+
+SYSTEM_PROMPT = """あなたはau法人契約代行のアシスタントBotです。親切で丁寧に、簡潔に回答してください。
+
+【サービス概要】
+- au法人契約の代行サービスです
+- スマホ1台の契約につき10,000円の報酬をお受け取りいただけます
+- 法人契約のため、1日あたり5〜7万円前後の報酬が見込めます
+- 今なら登録完了で、現金8,000円プレゼント
+
+【契約の流れ】
+1. 代行登録フォームから登録（名前・稼働エリア・身分証を提出）
+2. 法務局で登記簿謄本を取得
+3. 名刺を印刷（スタッフが自動作成します）
+4. auショップで法人契約を行う
+5. 契約したスマホを指定ロッカーに預け入れ
+6. 確認後、報酬が銀行口座に振り込まれます
+
+【報酬について】
+- スマホ1台の契約につき10,000円
+- 1日あたり5〜7台の契約が可能で、5〜7万円前後の報酬
+- 報酬は支払い依頼フォームから申請後、銀行振込で支払われます
+
+【登録について】
+- 代行登録フォームから名前と稼働エリアを入力し、身分証の写真を送信するだけで登録完了
+- 登録完了で現金8,000円プレゼント
+
+【注意事項】
+- 具体的な法的アドバイスや、このサービスの範囲外の質問には回答できません
+- 不明な点があれば、スタッフに確認するよう案内してください
+- 回答は短く簡潔にしてください（200文字以内を目安）
+"""
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -932,6 +969,61 @@ async def _keyboard_button_handler(update: Update, context: ContextTypes.DEFAULT
         await show_menu(update, context)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# LLM 自動応答
+# ═══════════════════════════════════════════════════════════════════════
+
+# ユーザーごとの会話履歴を保持（最大10往復）
+MAX_HISTORY = 10
+user_chat_history: dict[int, list[dict]] = {}
+
+
+async def llm_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """メニューボタン以外のテキストメッセージにLLMで自動応答する"""
+    # キーボードボタンのテキストはスキップ（別のハンドラで処理済み）
+    text = update.message.text
+    if text in ("🏦 支払い依頼", "📝 稼働データ入力", "📋 メニューを表示"):
+        return  # キーボードボタンは別ハンドラで処理
+
+    if not openai_client:
+        await update.message.reply_text("申し訳ございません。現在自動応答機能が利用できません。")
+        return
+
+    user_id = update.effective_user.id
+
+    # 会話履歴を取得・更新
+    if user_id not in user_chat_history:
+        user_chat_history[user_id] = []
+    history = user_chat_history[user_id]
+    history.append({"role": "user", "content": text})
+
+    # 履歴が長すぎる場合は古いものを削除
+    if len(history) > MAX_HISTORY * 2:
+        history[:] = history[-(MAX_HISTORY * 2):]
+
+    # OpenAI APIで応答を生成
+    try:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+        response = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7,
+        )
+        reply_text = response.choices[0].message.content.strip()
+
+        # アシスタントの応答を履歴に追加
+        history.append({"role": "assistant", "content": reply_text})
+
+        await update.message.reply_text(reply_text)
+    except Exception as e:
+        logger.error(f"LLM応答エラー: {e}")
+        await update.message.reply_text(
+            "申し訳ございません、一時的に応答できません。\n"
+            "代行登録をご希望の場合は /start を送信してください。"
+        )
+
+
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
@@ -1046,6 +1138,9 @@ def main() -> None:
 
     # メニューコールバック（ConversationHandlerにマッチしない場合のフォールバック）
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+
+    # LLM自動応答ハンドラ（ConversationHandlerにマッチしないテキストメッセージ用）
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, llm_reply))
 
     logger.info("Bot started.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
