@@ -485,26 +485,9 @@ async def transfer_bank_search(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def transfer_branch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["transfer"]["branch"] = update.message.text.strip()
-
-    keyboard = [
-        [
-            InlineKeyboardButton("普通", callback_data="type_普通"),
-            InlineKeyboardButton("当座", callback_data="type_当座"),
-        ]
-    ]
-    await update.message.reply_text(
-        "口座種別を選択してください：",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return TRANSFER_TYPE
-
-
-async def transfer_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    account_type = query.data.split("_")[1]
-    context.user_data["transfer"]["type"] = account_type
-    await query.message.edit_text(f"口座種別：{account_type}\n\n口座番号を入力してください：")
+    # 口座種別は「普通」固定（ユーザーに選択させない）
+    context.user_data["transfer"]["type"] = "普通"
+    await update.message.reply_text("口座番号を入力してください：")
     return TRANSFER_ACCOUNT
 
 
@@ -949,7 +932,6 @@ def main() -> None:
                 CallbackQueryHandler(transfer_bank_callback, pattern="^(bank_|transfer_cancel)"),
             ],
             TRANSFER_BRANCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_branch)],
-            TRANSFER_TYPE: [CallbackQueryHandler(transfer_type_callback, pattern="^type_")],
             TRANSFER_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_account)],
             TRANSFER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_amount)],
             TRANSFER_CONFIRM: [CallbackQueryHandler(transfer_confirm_callback, pattern="^transfer_")],
