@@ -33,6 +33,12 @@ from meishi_generator import create_business_card
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8789721641:AAFKm0JIBMZKcIhqc6htSgnwl3fvTj2PY2c")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "104JfX8b4VuE6T2yGKI6hLL58z3gZSKQ339TLnQ_Y2iI")
 TRANSFER_NOTIFY_GROUP_ID = int(os.environ.get("TRANSFER_NOTIFY_GROUP_ID", "-5006222520"))  # 振込依頼通知先グループ
+# 名刺作成機能の許可ユーザーネームリスト（@なしのユーザーネームで指定）
+MEISHI_ALLOWED_USERS: set[str] = set(
+    u.strip().lstrip("@").lower()
+    for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345").split(",")
+    if u.strip()
+)
 RCLONE_CONFIG = os.environ.get("RCLONE_CONFIG", "/home/ubuntu/.gdrive-rclone.ini")
 GDRIVE_ACCESS_TOKEN = os.environ.get("GDRIVE_ACCESS_TOKEN", "")
 JST = timezone(timedelta(hours=9))
@@ -184,12 +190,22 @@ auショップでこちらが指定する会社名義でiPhoneを契約してい
 OSHIGOTO_FLOW_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "oshigoto_flow.jpg")
 
 
+def _is_meishi_allowed(update: Update) -> bool:
+    """名刺作成機能の利用が許可されているユーザーか判定する"""
+    user = update.effective_user
+    if not user:
+        return False
+    username = (user.username or "").lower()
+    return username in MEISHI_ALLOWED_USERS
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = [
-        [InlineKeyboardButton("🪪 名刺の自動作成", callback_data="menu_meishi")],
-        [InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")],
-        [InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")],
-    ]
+    # 名刺作成ボタンは許可ユーザーのみに表示
+    keyboard = []
+    if _is_meishi_allowed(update):
+        keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
+    keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
+    keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # ウェルカムメッセージを送信
@@ -216,6 +232,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     data = query.data
 
     if data == "menu_meishi":
+        # 許可ユーザー以外は拒否
+        if not _is_meishi_allowed(update):
+            await query.answer("この機能は利用できません。", show_alert=True)
+            return
         return await start_meishi(update, context)
     elif data == "menu_transfer":
         return await start_transfer(update, context)
@@ -233,6 +253,11 @@ MEISHI_PAGE_SIZE = 8  # 1ページあたりの法人数
 async def start_meishi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    # 許可ユーザー以外は実行不可
+    if not _is_meishi_allowed(update):
+        await query.message.reply_text("❌ この機能は利用できません。")
+        return ConversationHandler.END
 
     msg = await query.message.reply_text("⏳ 法人一覧を読み込み中...")
     hojin_list = get_hojin_list()
