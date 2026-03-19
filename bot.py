@@ -216,7 +216,7 @@ def _make_reply_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ウェルカムメッセージ：代行登録ボタン付き（常時表示キーボードメニューも同時に設置）
+    # 一般ユーザー向け：代行登録ボタンのみ
     welcome_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 代行登録フォーム", callback_data="menu_register")],
     ])
@@ -232,20 +232,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"お仕事の流れ画像の送信に失敗: {e}")
 
-    # スタッフ用インラインボタンメニュー（常時表示キーボードも同時に設置）
+
+async def staff_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """スタッフ用メニュー（許可ユーザーのみ）"""
+    if not _is_meishi_allowed(update):
+        await update.message.reply_text("❌ このコマンドは許可されたスタッフのみ利用可能です。")
+        return
+
+    # スタッフ用インラインボタンメニュー
     inline_keyboard = []
-    if _is_meishi_allowed(update):
-        inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
+    inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
     inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
     inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
-    inline_markup = InlineKeyboardMarkup(inline_keyboard)
+    
     await update.message.reply_text(
-        "↓ スタッフ用メニュー：",
+        "🛠 **スタッフ用メニュー**",
         reply_markup=InlineKeyboardMarkup(inline_keyboard),
+        parse_mode="Markdown"
     )
     # 常時表示キーボードを設置
     await update.message.reply_text(
-        "↓ ボタンからいつでも操作できます。",
+        "↓ スタッフ用ショートカットキーボードを設置しました。",
         reply_markup=_make_reply_keyboard(),
     )
 
@@ -861,7 +868,7 @@ async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     msg_text = (
         "📝 **代行登録フォーム**\n\n"
         "名前と稼働エリアを入力してください。\n"
-        "例）加賀谷商事/広島県呉市"
+        "例）代行太郎/東京都世田谷区"
     )
     if update.callback_query:
         await update.callback_query.message.reply_text(msg_text, parse_mode="Markdown")
@@ -928,10 +935,8 @@ async def reg_id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def post_init(application: Application) -> None:
     """起動時にset_my_commandsでコマンドメニューを登録する"""
     commands = [
-        BotCommand("start", "メニューを表示する"),
-        BotCommand("menu", "メニューを表示する"),
-        BotCommand("transfer", "支払い依頼フォーム"),
-        BotCommand("report", "稼働データ入力フォーム"),
+        BotCommand("start", "利用開始・代行登録"),
+        BotCommand("staff", "スタッフ専用メニュー"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Bot commands registered.")
@@ -972,6 +977,9 @@ def main() -> None:
 
     # /menu コマンド
     app.add_handler(CommandHandler("menu", show_menu))
+
+    # /staff コマンド
+    app.add_handler(CommandHandler("staff", staff_menu))
 
     # キーボード「📋 メニューを表示」ボタンのハンドラ（インラインメニューを表示）
     app.add_handler(MessageHandler(
