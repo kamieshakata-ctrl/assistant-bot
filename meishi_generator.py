@@ -172,7 +172,6 @@ def create_business_card(
         font_label = ImageFont.truetype(FONT_REGULAR, 22)
         font_value = ImageFont.truetype(FONT_REGULAR, 24)
         font_email = ImageFont.truetype(FONT_REGULAR, 22)
-        font_logo = ImageFont.truetype(FONT_BOLD, 20)
     except Exception:
         font_hojin_prefix = ImageFont.load_default()
         font_hojin_name = ImageFont.load_default()
@@ -180,7 +179,6 @@ def create_business_card(
         font_label = ImageFont.load_default()
         font_value = ImageFont.load_default()
         font_email = ImageFont.load_default()
-        font_logo = ImageFont.load_default()
 
     # ── 法人名（2行表示）────────────────────────────────
     prefix, name_rest = split_hojin_name(hojin_name)
