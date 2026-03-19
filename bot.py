@@ -217,9 +217,11 @@ def _make_reply_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # 一般ユーザー向け：代行登録ボタンのみ
+    # 一般ユーザー向け：代行登録ボタン + FAQ + 経費・持ち物
     welcome_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 代行登録フォーム", callback_data="menu_register")],
+        [InlineKeyboardButton("❓ よくある質問", callback_data="faq_top")],
+        [InlineKeyboardButton("💰 経費・持ち物について", callback_data="faq_expenses")],
     ])
     await update.message.reply_text(
         WELCOME_MESSAGE,
@@ -232,6 +234,92 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_photo(photo=photo)
     except Exception as e:
         logger.error(f"お仕事の流れ画像の送信に失敗: {e}")
+
+
+# ── FAQ / 経費・持ち物 コールバックハンドラ ─────────────────────────────────────
+
+FAQ_ITEMS = {
+    "faq_black": {
+        "q": "Q.携帯ブラックでも対応可能ですか",
+        "a": (
+            "法人の名義のため、窓口担当者様の信用情報は関係ありません。"
+            "また、信用情報に傷がつくこともございません。"
+        ),
+    },
+    "faq_reward": {
+        "q": "Q.報酬はいつもらえますか",
+        "a": (
+            "契約完了後、動作確認を致します。\n"
+            "その後、問題なければ\n\n"
+            "🔸口座振込\n"
+            "🔸暗号通貨\n\n"
+            "をお選びいただけます。"
+        ),
+    },
+}
+
+FAQ_EXPENSES_TEXT = (
+    "≪経費・持ち物について≫\n\n"
+    "【📄登記簿取得時】\n\n"
+    "●印紙代が登記簿1枚につき、600円がかかります。"
+    "電子マネー等は使えませんので、必ず現金をご用意ください。\n\n"
+    "●支払い時にまとめて経費精算しますので、"
+    "最初に立て替えをお願い致します。\n\n"
+    "※難しい場合はご相談ください。\n\n"
+    "●持ち物等は必要ありませんが、"
+    "書類を入れておけるクリアファイルがあると便利です。"
+)
+
+
+async def faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """よくある質問・経費持ち物のコールバックハンドラ"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "faq_top":
+        # FAQ一覧を表示
+        keyboard = []
+        for key, item in FAQ_ITEMS.items():
+            keyboard.append([InlineKeyboardButton(item["q"], callback_data=key)])
+        keyboard.append([InlineKeyboardButton("⬅️ 戻る", callback_data="faq_back_start")])
+        await query.message.reply_text(
+            "❓ **よくある質問**\n\n質問を選んでください。",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+    elif data in FAQ_ITEMS:
+        # 個別のFAQ回答を表示
+        item = FAQ_ITEMS[data]
+        keyboard = [
+            [InlineKeyboardButton("⬅️ 質問一覧に戻る", callback_data="faq_top")],
+            [InlineKeyboardButton("🏠 メニューに戻る", callback_data="faq_back_start")],
+        ]
+        await query.message.reply_text(
+            f"**{item['q']}**\n\n{item['a']}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+    elif data == "faq_expenses":
+        # 経費・持ち物について
+        keyboard = [
+            [InlineKeyboardButton("🏠 メニューに戻る", callback_data="faq_back_start")],
+        ]
+        await query.message.reply_text(
+            FAQ_EXPENSES_TEXT,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    elif data == "faq_back_start":
+        # メニューに戻る（ウェルカムボタンを再表示）
+        welcome_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 代行登録フォーム", callback_data="menu_register")],
+            [InlineKeyboardButton("❓ よくある質問", callback_data="faq_top")],
+            [InlineKeyboardButton("💰 経費・持ち物について", callback_data="faq_expenses")],
+        ])
+        await query.message.reply_text(
+            WELCOME_MESSAGE,
+            reply_markup=welcome_markup,
+        )
 
 
 async def staff_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1178,6 +1266,9 @@ def main() -> None:
         allow_reentry=True,
     )
     app.add_handler(register_conv)
+
+    # FAQ / 経費・持ち物コールバックハンドラ
+    app.add_handler(CallbackQueryHandler(faq_callback, pattern="^faq_"))
 
     # メニューコールバック（ConversationHandlerにマッチしない場合のフォールバック）
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
