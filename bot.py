@@ -13,7 +13,8 @@ import os
 from datetime import datetime, timezone, timedelta
 
 import requests
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -46,12 +47,12 @@ MEISHI_ALLOWED_USERS: set[str] = set(
     if u.strip()
 )
 GAS_URL = os.environ.get("GAS_URL", "")  # Google Apps Script Web App URL
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 JST = timezone(timedelta(hours=9))
 
-# ── OpenAI クライアント ──────────────────────────────────────────────────
-openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL) if OPENAI_API_KEY else None
+# ── Gemini クライアント ──────────────────────────────────────────────────
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """あなたはau法人契約代行のアシスタントBotです。親切で丁寧に、簡潔に回答してください。
 
@@ -904,19 +905,26 @@ async def reg_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return REG_ID_PHOTO
 
 
+# 代行登録通知グループID
+REGISTER_NOTIFY_GROUP_ID = -5294992039
+
+
 async def reg_id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """身分証写真を受け取りスプレッドシートに保存する"""
     user = update.message.from_user
     tg_user_id = str(user.id)
-    tg_username = f"@{user.username}" if user.username else ""
+    tg_username = f"@{user.username}" if user.username else f"ID:{user.id}"
     r = context.user_data["register"]
+    name = r.get("name", "")
+    area = r.get("area", "")
+    name_area = f"{name}/{area}" if area else name
 
     try:
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
         gas_append(
             "代行登録",
             ["タイムスタンプ", "TGユーザーID", "TGユーザー名", "名前", "稼働エリア", "身分証"],
-            [now, tg_user_id, tg_username, r.get("name", ""), r.get("area", ""), "送信済み"],
+            [now, tg_user_id, tg_username, name, area, "送信済み"],
         )
         await update.message.reply_text(
             "✅ 登録が完了しました！\n担当者からご連絡いたします。しばらくお待ちください。"
@@ -924,6 +932,36 @@ async def reg_id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     except Exception as e:
         logger.error(f"代行登録保存エラー: {e}")
         await update.message.reply_text(f"❌ 登録に失敗しました: {e}")
+
+    # グループへ通知と身分証画像の転送
+    try:
+        notify_text = (
+            "🆕\n"
+            "新規代行登録がありました。\n\n"
+            f"・テレグラムID: {tg_username}\n"
+            f"・名前/居住地: {name_area}\n"
+            "・身分証画像: 下記参照"
+        )
+        await context.bot.send_message(
+            chat_id=REGISTER_NOTIFY_GROUP_ID,
+            text=notify_text,
+        )
+        # 身分証画像を転送
+        if update.message.photo:
+            photo = update.message.photo[-1]  # 最高解像度
+            await context.bot.send_photo(
+                chat_id=REGISTER_NOTIFY_GROUP_ID,
+                photo=photo.file_id,
+                caption=f"身分証 - {name_area} ({tg_username})",
+            )
+        elif update.message.document:
+            await context.bot.send_document(
+                chat_id=REGISTER_NOTIFY_GROUP_ID,
+                document=update.message.document.file_id,
+                caption=f"身分証 - {name_area} ({tg_username})",
+            )
+    except Exception as e:
+        logger.error(f"代行登録グループ通知エラー: {e}")
 
     return ConversationHandler.END
 
