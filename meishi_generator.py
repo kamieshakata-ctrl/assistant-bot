@@ -225,13 +225,6 @@ def create_business_card(
         draw.text((x_start + 80, y_info_start), value, font=font_value, fill=DARK_BLUE)
         y_info_start += 34
 
-    # ── ロゴ（右下）──────────────────────────────────────
-    logo_x = CARD_W - 200
-    logo_y = CARD_H - 55
-    # ロゴ背景
-    draw.rectangle([logo_x - 10, logo_y - 8, CARD_W - 25, CARD_H - 18], fill=DARK_BLUE, outline=LIGHT_BLUE, width=1)
-    draw.text((logo_x, logo_y), "au 法人契約代行", font=font_logo, fill=WHITE)
-
     # ── 出力 ──────────────────────────────────────────────
     buf = io.BytesIO()
     img.save(buf, format="PNG", dpi=(300, 300))
