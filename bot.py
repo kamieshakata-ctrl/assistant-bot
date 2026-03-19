@@ -43,7 +43,7 @@ TRANSFER_NOTIFY_GROUP_ID = int(os.environ.get("TRANSFER_NOTIFY_GROUP_ID", "-5006
 # 名刺作成機能の許可ユーザーネームリスト（@なしのユーザーネームで指定）
 MEISHI_ALLOWED_USERS: set[str] = set(
     u.strip().lstrip("@").lower()
-    for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345").split(",")
+    for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345,ks19970606").split(",")
     if u.strip()
 )
 RCLONE_CONFIG = os.environ.get("RCLONE_CONFIG", "/home/ubuntu/.gdrive-rclone.ini")
@@ -846,7 +846,7 @@ async def report_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
     try:
         wb = download_spreadsheet()
         ws = get_or_create_sheet(
-            wb, "稼働報告",
+            wb, "稼働データ",
             ["タイムスタンプ", "稼働者名", "稼働店舗数", "稼働日", "iPhone詳細"]
         )
         now = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
