@@ -258,7 +258,6 @@ def _make_reply_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton("📋 メニューを表示")],
         ],
         resize_keyboard=True,
-        persistent=True,
     )
 
 
