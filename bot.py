@@ -6,15 +6,21 @@
 3. 稼働データ入力フォーム（稼働者名・店舗数・日付・iPhone機種・容量・台数）
 """
 
+import hashlib
+import hmac
 import io
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone, timedelta
 
 import requests
+from eth_account import Account
 from google import genai
 from google.genai import types
+from openai import OpenAI
+from web3 import Web3
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -50,9 +56,36 @@ GAS_URL = os.environ.get("GAS_URL", "")  # Google Apps Script Web App URL
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 JST = timezone(timedelta(hours=9))
 
+# ── OpenAI クライアント ──────────────────────────────────────────────────
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
+openai_client: OpenAI | None = None
+if OPENAI_API_KEY:
+    if OPENAI_BASE_URL:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    else:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
 # ── Gemini クライアント ──────────────────────────────────────────────────
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 GEMINI_MODEL = "gemini-2.5-flash"
+
+# ── 仮想通貨送金設定 ─────────────────────────────────────────────────────
+# 送金許可ユーザー（@なしのユーザーネームで指定）
+CRYPTO_ALLOWED_USERS: set[str] = set(
+    u.strip().lstrip("@").lower()
+    for u in os.environ.get("CRYPTO_ALLOWED_USERS", "kk_12345,ks19970606").split(",")
+    if u.strip()
+)
+# Trust Wallet ニーモニック（環境変数から取得）
+TRUST_WALLET_MNEMONIC = os.environ.get("TRUST_WALLET_MNEMONIC", "")
+# bitFlyer API認証情報（環境変数から取得）
+BITFLYER_API_KEY = os.environ.get("BITFLYER_API_KEY", "")
+BITFLYER_API_SECRET = os.environ.get("BITFLYER_API_SECRET", "")
+# bitFlyer ETH入金アドレス（環境変数から取得）
+BITFLYER_ETH_ADDRESS = os.environ.get("BITFLYER_ETH_ADDRESS", "")
+# Ethereum RPC（Infura等）
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.llamarpc.com")
 
 SYSTEM_PROMPT = """あなたはau法人契約代行のアシスタントBotです。親切で丁寧に、簡潔に回答してください。
 
@@ -126,6 +159,10 @@ REPORT_CONFIRM = 308
 # 代行登録
 REG_INFO = 400   # 名前/稼働エリア入力
 REG_ID_PHOTO = 401  # 身分証写真送信
+
+# 仮想通貨送金
+CRYPTO_AMOUNT = 500   # 送金額入力
+CRYPTO_CONFIRM = 501  # 送金確認
 
 
 # ── Google Apps Script helpers ────────────────────────────────────────────
@@ -202,6 +239,15 @@ def _is_meishi_allowed(update: Update) -> bool:
         return False
     username = (user.username or "").lower()
     return username in MEISHI_ALLOWED_USERS
+
+
+def _is_crypto_allowed(update: Update) -> bool:
+    """仮想通貨送金機能の利用が許可されているユーザーか判定する"""
+    user = update.effective_user
+    if not user:
+        return False
+    username = (user.username or "").lower()
+    return username in CRYPTO_ALLOWED_USERS
 
 
 def _make_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -333,7 +379,10 @@ async def staff_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
     inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
     inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
-    
+    # 送金機能は許可ユーザーのみ表示
+    if _is_crypto_allowed(update):
+        inline_keyboard.append([InlineKeyboardButton("💸 ETH送金・売却（bitFlyer）", callback_data="menu_crypto")])
+
     await update.message.reply_text(
         "🛠 **スタッフ用メニュー**",
         reply_markup=InlineKeyboardMarkup(inline_keyboard),
@@ -364,6 +413,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return await start_report(update, context)
     elif data == "menu_register":
         return await start_register(update, context)
+    elif data == "menu_crypto":
+        # 送金機能は許可ユーザーのみ
+        if not _is_crypto_allowed(update):
+            await query.answer("この機能は利用できません。", show_alert=True)
+            return
+        return await start_crypto(update, context)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1101,6 +1156,301 @@ async def _keyboard_button_handler(update: Update, context: ContextTypes.DEFAULT
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 機能5: 仮想通貨送金（Trust Wallet → bitFlyer ETH → JPY売却）
+# ═══════════════════════════════════════════════════════════════════════
+
+def _bitflyer_request(method: str, path: str, body: dict | None = None) -> dict:
+    """bitFlyer Lightning APIへの認証付きリクエストを送信する"""
+    timestamp = str(int(time.time()))
+    body_str = json.dumps(body) if body else ""
+    text = timestamp + method + path + body_str
+    sign = hmac.new(
+        BITFLYER_API_SECRET.encode("utf-8"),
+        text.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = {
+        "ACCESS-KEY": BITFLYER_API_KEY,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-SIGN": sign,
+        "Content-Type": "application/json",
+    }
+    url = "https://api.bitflyer.com" + path
+    if method == "GET":
+        resp = requests.get(url, headers=headers, timeout=30)
+    else:
+        resp = requests.post(url, headers=headers, data=body_str, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _get_eth_balance_and_address() -> tuple[str, float]:
+    """Trust WalletのニーモニックからETHアドレスと残高を取得する"""
+    Account.enable_unaudited_hdwallet_features()
+    acct = Account.from_mnemonic(TRUST_WALLET_MNEMONIC)
+    w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
+    balance_wei = w3.eth.get_balance(acct.address)
+    balance_eth = float(Web3.from_wei(balance_wei, "ether"))
+    return acct.address, balance_eth
+
+
+def _send_eth_to_bitflyer(amount_eth: float) -> str:
+    """Trust WalletからbitFlyerのETH入金アドレスへETHを送金し、txハッシュを返す"""
+    Account.enable_unaudited_hdwallet_features()
+    acct = Account.from_mnemonic(TRUST_WALLET_MNEMONIC)
+    w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
+
+    nonce = w3.eth.get_transaction_count(acct.address)
+    gas_price = w3.eth.gas_price
+    gas_limit = 21000
+    amount_wei = Web3.to_wei(amount_eth, "ether")
+
+    tx = {
+        "nonce": nonce,
+        "to": Web3.to_checksum_address(BITFLYER_ETH_ADDRESS),
+        "value": amount_wei,
+        "gas": gas_limit,
+        "gasPrice": gas_price,
+        "chainId": 1,  # Ethereum Mainnet
+    }
+    signed = w3.eth.account.sign_transaction(tx, acct.key)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    return tx_hash.hex()
+
+
+def _sell_eth_on_bitflyer(amount_eth: float) -> dict:
+    """bitFlyer APIでETHを日本円に成行売却する"""
+    body = {
+        "product_code": "ETH_JPY",
+        "child_order_type": "MARKET",
+        "side": "SELL",
+        "size": round(amount_eth, 8),
+    }
+    return _bitflyer_request("POST", "/v1/me/sendchildorder", body)
+
+
+def _get_bitflyer_eth_balance() -> float:
+    """bitFlyer口座のETH残高を取得する"""
+    data = _bitflyer_request("GET", "/v1/me/getbalance")
+    for item in data:
+        if item.get("currency_code") == "ETH":
+            return float(item.get("available", 0))
+    return 0.0
+
+
+def _get_eth_price_jpy() -> float:
+    """bitFlyerのETH/JPY現在価格を取得する"""
+    resp = requests.get(
+        "https://api.bitflyer.com/v1/ticker",
+        params={"product_code": "ETH_JPY"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return float(resp.json().get("ltp", 0))
+
+
+async def start_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """仮想通貨送金フロー開始（許可ユーザーのみ）"""
+    # コールバッククエリとコマンド両対応
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        reply_func = query.message.reply_text
+    else:
+        reply_func = update.message.reply_text
+
+    if not _is_crypto_allowed(update):
+        await reply_func("❌ この機能は許可されたスタッフのみ利用可能です。")
+        return ConversationHandler.END
+
+    if not TRUST_WALLET_MNEMONIC or not BITFLYER_API_KEY or not BITFLYER_ETH_ADDRESS:
+        await reply_func("❌ 送金に必要な環境変数が設定されていません。\nRAILWAYの環境変数を確認してください。")
+        return ConversationHandler.END
+
+    await reply_func("⏳ ウォレット残高を確認中...")
+    try:
+        address, balance = _get_eth_balance_and_address()
+        eth_price = _get_eth_price_jpy()
+        jpy_value = balance * eth_price
+        msg = (
+            f"💼 **Trust Wallet残高確認**\n\n"
+            f"アドレス: `{address}`\n"
+            f"ETH残高: `{balance:.6f} ETH`\n"
+            f"現在価格: `¥{eth_price:,.0f}/ETH`\n"
+            f"概算価値: `¥{jpy_value:,.0f}`\n\n"
+            f"送金するETH量を入力してください（例: `0.1`）\n"
+            f"送金先: bitFlyer入金アドレス\n"
+            f"`{BITFLYER_ETH_ADDRESS}`\n\n"
+            f"キャンセルするには /cancel を送信してください。"
+        )
+        await reply_func(msg, parse_mode="Markdown")
+        context.user_data["crypto_wallet_balance"] = balance
+        context.user_data["crypto_eth_price"] = eth_price
+        return CRYPTO_AMOUNT
+    except Exception as e:
+        logger.error(f"残高確認エラー: {e}")
+        await reply_func(f"❌ 残高確認に失敗しました。\nエラー: {e}")
+        return ConversationHandler.END
+
+
+async def crypto_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """送金ETH量の入力を受け取り確認画面を表示する"""
+    text = update.message.text.strip()
+    try:
+        amount = float(text)
+        if amount <= 0:
+            raise ValueError("0以下は無効")
+    except ValueError:
+        await update.message.reply_text("❌ 有効な数値を入力してください（例: `0.1`）", parse_mode="Markdown")
+        return CRYPTO_AMOUNT
+
+    balance = context.user_data.get("crypto_wallet_balance", 0)
+    eth_price = context.user_data.get("crypto_eth_price", 0)
+
+    if amount > balance:
+        await update.message.reply_text(
+            f"❌ 残高不足です。\n残高: `{balance:.6f} ETH` / 指定: `{amount:.6f} ETH`",
+            parse_mode="Markdown",
+        )
+        return CRYPTO_AMOUNT
+
+    jpy_estimate = amount * eth_price
+    context.user_data["crypto_send_amount"] = amount
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ 送金を実行する", callback_data="crypto_execute")],
+        [InlineKeyboardButton("❌ キャンセル", callback_data="crypto_cancel")],
+    ])
+    await update.message.reply_text(
+        f"📋 **送金確認**\n\n"
+        f"送金量: `{amount:.6f} ETH`\n"
+        f"概算円換算: `¥{jpy_estimate:,.0f}`\n"
+        f"送金先: `{BITFLYER_ETH_ADDRESS}`\n\n"
+        f"⚠️ 送金後は取り消しできません。実行しますか？",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+    return CRYPTO_CONFIRM
+
+
+async def crypto_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """送金確認コールバック"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "crypto_cancel":
+        await query.message.reply_text("❌ 送金をキャンセルしました。")
+        return ConversationHandler.END
+
+    amount = context.user_data.get("crypto_send_amount", 0)
+    if not amount:
+        await query.message.reply_text("❌ 送金額が不明です。最初からやり直してください。")
+        return ConversationHandler.END
+
+    await query.message.reply_text(f"⏳ `{amount:.6f} ETH` をbitFlyerへ送金中...", parse_mode="Markdown")
+
+    try:
+        tx_hash = _send_eth_to_bitflyer(amount)
+        await query.message.reply_text(
+            f"✅ **ETH送金完了！**\n\n"
+            f"送金量: `{amount:.6f} ETH`\n"
+            f"TXハッシュ: `{tx_hash}`\n"
+            f"Etherscan: https://etherscan.io/tx/{tx_hash}\n\n"
+            f"⏳ bitFlyerへの入金確認後、JPY売却を実行してください。\n"
+            f"bitFlyer残高確認・売却は /staff → ETH送金・売却 から行えます。",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"ETH送金エラー: {e}")
+        await query.message.reply_text(
+            f"❌ **送金に失敗しました。**\n\nエラー: `{e}`\n\n"
+            f"ネットワーク状況やガス代を確認してください。",
+            parse_mode="Markdown",
+        )
+    return ConversationHandler.END
+
+
+async def crypto_sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """bitFlyer口座のETH残高を確認し、成行売却を実行する（許可ユーザーのみ）"""
+    if not _is_crypto_allowed(update):
+        await update.message.reply_text("❌ この機能は許可されたスタッフのみ利用可能です。")
+        return
+
+    if not BITFLYER_API_KEY or not BITFLYER_API_SECRET:
+        await update.message.reply_text("❌ bitFlyer APIキーが設定されていません。")
+        return
+
+    await update.message.reply_text("⏳ bitFlyer残高を確認中...")
+    try:
+        eth_balance = _get_bitflyer_eth_balance()
+        eth_price = _get_eth_price_jpy()
+        jpy_estimate = eth_balance * eth_price
+
+        if eth_balance < 0.001:
+            await update.message.reply_text(
+                f"⚠️ bitFlyer ETH残高が少なすぎます。\n"
+                f"残高: `{eth_balance:.6f} ETH`\n"
+                f"先にTrust WalletからETHを送金してください。",
+                parse_mode="Markdown",
+            )
+            return
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ {eth_balance:.6f} ETH を全額売却", callback_data=f"sell_all_{eth_balance:.8f}")],
+            [InlineKeyboardButton("❌ キャンセル", callback_data="sell_cancel")],
+        ])
+        await update.message.reply_text(
+            f"💹 **bitFlyer ETH売却確認**\n\n"
+            f"ETH残高: `{eth_balance:.6f} ETH`\n"
+            f"現在価格: `¥{eth_price:,.0f}/ETH`\n"
+            f"概算受取額: `¥{jpy_estimate:,.0f}`\n\n"
+            f"全額売却しますか？",
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"bitFlyer残高確認エラー: {e}")
+        await update.message.reply_text(f"❌ bitFlyer残高確認に失敗しました。\nエラー: {e}")
+
+
+async def crypto_sell_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """bitFlyer ETH売却確認コールバック"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "sell_cancel":
+        await query.message.reply_text("❌ 売却をキャンセルしました。")
+        return
+
+    if query.data.startswith("sell_all_"):
+        amount_str = query.data.replace("sell_all_", "")
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            await query.message.reply_text("❌ 売却量の取得に失敗しました。")
+            return
+
+        await query.message.reply_text(f"⏳ `{amount:.6f} ETH` を成行売却中...", parse_mode="Markdown")
+        try:
+            result = _sell_eth_on_bitflyer(amount)
+            order_id = result.get("child_order_acceptance_id", "不明")
+            await query.message.reply_text(
+                f"✅ **ETH売却注文完了！**\n\n"
+                f"売却量: `{amount:.6f} ETH`\n"
+                f"注文ID: `{order_id}`\n\n"
+                f"成行注文のため、約定価格は市場価格に依存します。\n"
+                f"bitFlyerアプリで約定状況をご確認ください。",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error(f"ETH売却エラー: {e}")
+            await query.message.reply_text(
+                f"❌ **売却に失敗しました。**\n\nエラー: `{e}`",
+                parse_mode="Markdown",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # LLM 自動応答
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1267,8 +1617,32 @@ def main() -> None:
     )
     app.add_handler(register_conv)
 
+    # 仮想通貨送金 ConversationHandler
+    crypto_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_crypto, pattern="^menu_crypto$"),
+            CommandHandler("crypto", start_crypto),
+        ],
+        states={
+            CRYPTO_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, crypto_amount_input)],
+            CRYPTO_CONFIRM: [CallbackQueryHandler(crypto_confirm_callback, pattern="^crypto_")],
+        },
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", lambda u, c: (u.message.reply_text("❌ 送金をキャンセルしました。"), ConversationHandler.END)[1]),
+            CallbackQueryHandler(menu_callback, pattern="^menu_"),
+        ],
+        per_user=True,
+        per_chat=True,
+        allow_reentry=True,
+    )
+    app.add_handler(crypto_conv)
+
     # FAQ / 経費・持ち物コールバックハンドラ
     app.add_handler(CallbackQueryHandler(faq_callback, pattern="^faq_"))
+
+    # bitFlyer ETH売却コールバックハンドラ
+    app.add_handler(CallbackQueryHandler(crypto_sell_callback, pattern="^sell_"))
 
     # メニューコールバック（ConversationHandlerにマッチしない場合のフォールバック）
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
