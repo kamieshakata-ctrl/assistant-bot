@@ -1944,6 +1944,10 @@ def main() -> None:
     # LLM自動応答ハンドラ（ConversationHandlerにマッチしないテキストメッセージ用）
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, llm_reply))
 
+    # ダミーサーバーをバックグラウンドで起動
+    from server_dummy import start_server_in_background
+    start_server_in_background()
+
     logger.info("Bot started.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
