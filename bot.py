@@ -43,7 +43,7 @@ from banks_data import MAJOR_BANKS, search_banks
 from meishi_generator import create_business_card
 
 # ── Configuration ──────────────────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8789721641:AAFKm0JIBMZKcIhqc6htSgnwl3fvTj2PY2c")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8789721641:AAFzFEpNzKNrJoDTiDQCiqO0YeS2FYA6E9U")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "104JfX8b4VuE6T2yGKI6hLL58z3gZSKQ339TLnQ_Y2iI")
 TRANSFER_NOTIFY_GROUP_ID = int(os.environ.get("TRANSFER_NOTIFY_GROUP_ID", "-5006222520"))  # 振込依頼通知先グループ
 # 名刺作成機能の許可ユーザーネームリスト（@なしのユーザーネームで指定）
