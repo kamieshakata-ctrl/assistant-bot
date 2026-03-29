@@ -1164,8 +1164,8 @@ async def _keyboard_button_handler(update: Update, context: ContextTypes.DEFAULT
 
 def _bitflyer_request(method: str, path: str, body: dict | None = None) -> dict:
     """bitFlyer Lightning APIへの認証付きリクエストを送信する"""
-    timestamp = str(int(time.time()))
-    body_str = json.dumps(body) if body else ""
+    timestamp = str(time.time())
+    body_str = json.dumps(body, separators=(",", ":")) if body else ""
     text = timestamp + method + path + body_str
     sign = hmac.new(
         BITFLYER_API_SECRET.encode("utf-8"),
