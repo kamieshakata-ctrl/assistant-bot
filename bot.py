@@ -49,7 +49,7 @@ TRANSFER_NOTIFY_GROUP_ID = int(os.environ.get("TRANSFER_NOTIFY_GROUP_ID", "-5006
 # 名刺作成機能の許可ユーザーネームリスト（@なしのユーザーネームで指定）
 MEISHI_ALLOWED_USERS: set[str] = set(
     u.strip().lstrip("@").lower()
-    for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345,ks19970606").split(",")
+    for u in os.environ.get("MEISHI_ALLOWED_USERS", "kk_12345,ks19970606,kk1_12345").split(",")
     if u.strip()
 )
 GAS_URL = os.environ.get("GAS_URL", "")  # Google Apps Script Web App URL
