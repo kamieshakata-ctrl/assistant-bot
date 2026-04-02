@@ -15,6 +15,7 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 
+from playwright.async_api import async_playwright
 import requests
 from eth_account import Account
 from google import genai
@@ -278,8 +279,35 @@ async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     hojin_name = context.user_data.get("hojin_name", "不明な法人")
     email = context.user_data.get("hojin_email", "")
     
-    # Twilio APIで050発番
-    phone_number = _generate_twilio_050()
+    await query.message.reply_text("🌐 IVRy (アイブリー) の自動登録を開始します...\n(ブラウザ操作のため少し時間がかかります)")
+    
+    phone_number = "取得エラー"
+    
+    # ── Playwrightによるアイブリー自動操作 (仮実装・要調整) ──
+    try:
+        async with async_playwright() as p:
+            # Railway環境で動かすためのヘッドレスブラウザ起動
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+            page = await browser.new_page()
+            
+            # 1. トップページへ
+            await page.goto("https://ivry.jp/")
+            
+            # 2. メールアドレスを入力して「無料で試す」をクリック
+            # ※実際のサイトのセレクタ(HTML構造)に合わせて調整が必要
+            await page.fill('input[type="email"]', email)
+            await page.click('text="無料で試す"')
+            
+            # 3. 本来ならここでメールの到着を待ち、そのURLを開いてフォームを埋める処理が入る
+            await page.wait_for_timeout(3000) # 仮の待機
+            
+            await browser.close()
+            
+            phone_number = "050-XXXX-XXXX (IVRy仮連携)"
+    except Exception as e:
+        logger.error(f"Playwright Error: {e}")
+        phone_number = f"自動化エラー: {e}"
+    # ────────────────────────────────────────────────────────
     
     # スプレッドシートに書き込み (法人一覧シートと仮定)
     try:
