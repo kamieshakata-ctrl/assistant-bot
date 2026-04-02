@@ -1300,7 +1300,11 @@ async def start_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         # Trust Wallet残高
         tw_address, tw_balance = "未設定", 0.0
         if TRUST_WALLET_MNEMONIC:
-            tw_address, tw_balance = _get_eth_balance_and_address()
+            try:
+                tw_address, tw_balance = _get_eth_balance_and_address()
+            except Exception as e:
+                logger.warning(f"Trust Wallet balance fetch failed: {e}")
+                tw_address, tw_balance = "取得エラー", 0.0
 
         # bitFlyer残高
         bf_eth = _get_bitflyer_eth_balance()
