@@ -208,8 +208,37 @@ async def start_hojin_register(update: Update, context: ContextTypes.DEFAULT_TYP
     return HOJIN_NAME
 
 async def hojin_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    hojin_name = update.message.text.strip()
-    context.user_data["hojin_name"] = hojin_name
+    text = update.message.text.strip()
+    
+    # パース処理 (法人番号、名前、住所、最終更新日)
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    
+    number = ""
+    name = ""
+    address = ""
+    
+    for i, line in enumerate(lines):
+        if line.startswith("法人番号："):
+            number = line.replace("法人番号：", "").replace(" ", "")
+            # 通常、次の行が法人名、その次が住所
+            if i + 1 < len(lines):
+                # 法人名とフリガナがスペースで区切られている場合の処理
+                name_parts = lines[i+1].split()
+                if len(name_parts) > 1 and "アーカイブ" in name_parts: # 特殊ケース対応
+                   name = name_parts[-1] 
+                else:
+                   name = lines[i+1]
+            if i + 2 < len(lines) and not lines[i+2].startswith("最終更新"):
+                address = lines[i+2]
+            break
+            
+    # もしパースに失敗したら、全体を名前として扱うフォールバック
+    if not name:
+        name = lines[0] if lines else "不明な法人"
+        
+    context.user_data["hojin_name"] = name
+    context.user_data["hojin_number"] = number
+    context.user_data["hojin_address"] = address
     
     # kamies.net の捨てメアドを自動生成 (API不要のCatch-all方式)
     random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -254,7 +283,9 @@ async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     # スプレッドシートに書き込み (法人一覧シートと仮定)
     try:
-        gas_append("法人一覧シート", ["法人名", "電話番号", "メールアドレス"], [hojin_name, phone_number, email])
+        number = context.user_data.get("hojin_number", "")
+        address = context.user_data.get("hojin_address", "")
+        gas_append("法人一覧シート", ["法人番号", "法人名", "住所", "電話番号", "メールアドレス"], [number, hojin_name, address, phone_number, email])
         await query.message.reply_text(
             f"🎉 **登録完了！**
 
