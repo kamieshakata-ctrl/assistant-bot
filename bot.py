@@ -85,7 +85,7 @@ BITFLYER_API_SECRET = os.environ.get("BITFLYER_API_SECRET", "")
 # bitFlyer ETH入金アドレス（環境変数から取得）
 BITFLYER_ETH_ADDRESS = os.environ.get("BITFLYER_ETH_ADDRESS", "")
 # Ethereum RPC（Infura等）
-ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://cloudflare-eth.com")
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://rpc.ankr.com/eth")
 
 SYSTEM_PROMPT = """あなたはau法人契約代行のアシスタントBotです。親切で丁寧に、簡潔に回答してください。
 
