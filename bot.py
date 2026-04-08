@@ -15,7 +15,6 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 
-from playwright.async_api import async_playwright
 import threading
 import requests
 from eth_account import Account
@@ -286,25 +285,15 @@ async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     # ── Playwrightによるアイブリー自動操作 (仮実装・要調整) ──
     try:
-        async with async_playwright() as p:
-            # Railway環境で動かすためのヘッドレスブラウザ起動
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-            page = await browser.new_page()
-            
-            # 1. トップページへ
-            await page.goto("https://ivry.jp/")
-            
-            # 2. メールアドレスを入力して「無料で試す」をクリック
-            # ※実際のサイトのセレクタ(HTML構造)に合わせて調整が必要
-            await page.fill('input[type="email"]', email)
-            await page.click('text="無料で試す"')
-            
-            # 3. 本来ならここでメールの到着を待ち、そのURLを開いてフォームを埋める処理が入る
-            await page.wait_for_timeout(3000) # 仮の待機
-            
-            await browser.close()
-            
-            phone_number = "050-XXXX-XXXX (IVRy仮連携)"
+        # async with async_playwright() as p:
+        #     browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        #     page = await browser.new_page()
+        #     await page.goto("https://ivry.jp/")
+        #     await page.fill('input[type="email"]', email)
+        #     await page.click('text="無料で試す"')
+        #     await page.wait_for_timeout(3000)
+        #     await browser.close()
+        phone_number = "050-XXXX-XXXX (ブラウザ機能調整中)"
     except Exception as e:
         logger.error(f"Playwright Error: {e}")
         phone_number = f"自動化エラー: {e}"
