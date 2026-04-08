@@ -2158,23 +2158,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, llm_reply))
 
 
-    # ── アイブリー自動登録連携リスナー (ntfy.sh) ──
-    def ntfy_listener():
-        try:
-            logger.info("ntfy.sh listener started...")
-            resp = requests.get("https://ntfy.sh/kamies_ivry_secret_queue_2026/json", stream=True)
-            for line in resp.iter_lines():
-                if line:
-                    data = json.loads(line)
-                    if data.get("event") == "message":
-                        message_url = data.get("message")
-                        if message_url and message_url.startswith("https://ivry.jp/"):
-                            logger.info(f"Received IVRy URL from ntfy: {message_url}")
-                            # TODO: asyncioのループにPlaywright処理を投げる
-        except Exception as e:
-            logger.error(f"ntfy listener error: {e}")
-
-    threading.Thread(target=ntfy_listener, daemon=True).start()
+    # ntfy listener temporarily removed
 
     # ダミーサーバーをバックグラウンドで起動
     from server_dummy import start_server_in_background
