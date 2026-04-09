@@ -146,18 +146,31 @@ def _get_zipcode_from_address(address: str) -> str:
         return ""
         
     try:
-        query = address[:15] # 都道府県・市区町村・町域あたりまでを検索クエリにする
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        # 住所から都道府県と市区町村あたりを抽出（より正確な検索のため）
+        # '丁目'や数字の前までを検索クエリにするのがベスト
+        query = re.split(r'[0-9０-９一二三四五六七八九十百千]+[丁番号\-ー]', address)[0]
+        if not query:
+            query = address[:15]
+            
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
+        }
         url = f"https://www.google.com/search?q={requests.utils.quote(query + ' 郵便番号')}"
         resp = requests.get(url, headers=headers, timeout=5)
         
         if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            text = soup.get_text()
-            # Googleの検索結果から「〒123-4567」または「123-4567」の形式を探す
-            match = re.search(r'〒?([0-9]{3}-[0-9]{4})', text)
+            # Googleのレスポンスから郵便番号形式（〒XXX-XXXX）を強引に抽出
+            # 検索結果のアンサーボックスに確実に出るはず
+            match = re.search(r'〒?([0-9]{3}-[0-9]{4})', resp.text)
             if match:
                 return match.group(1)
+            else:
+                # 念のためハイフンなしの7桁数字も探す
+                match_raw = re.search(r'郵便番号.*?([0-9]{7})', resp.text)
+                if match_raw:
+                    val = match_raw.group(1)
+                    return f"{val[:3]}-{val[3:]}"
     except Exception as e:
         print(f"Zipcode scrape error: {e}")
         
