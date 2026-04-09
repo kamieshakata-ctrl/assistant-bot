@@ -274,38 +274,28 @@ async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("❌ 法人登録をキャンセルしました。")
         return ConversationHandler.END
         
-    await query.message.reply_text("⏳ Twilioから050番号を取得し、シートに書き込んでいます...")
+    await query.message.reply_text("⏳ 登録情報をシートに書き込んでいます...")
     
     hojin_name = context.user_data.get("hojin_name", "不明な法人")
     email = context.user_data.get("hojin_email", "")
-    
-    await query.message.reply_text("🌐 IVRy (アイブリー) の自動登録を開始します...\n(ブラウザ操作のため少し時間がかかります)")
-    
-    phone_number = "取得エラー"
-    
-    # ── Playwrightによるアイブリー自動操作 (仮実装・要調整) ──
-    # Yoom連携により自動取得する前提のためダミーを格納
-    phone_number = "Yoomで発番待ち"
-
-    # ────────────────────────────────────────────────────────
     
     # スプレッドシートに書き込み (法人一覧シートと仮定)
     try:
         number = context.user_data.get("hojin_number", "")
         address = context.user_data.get("hojin_address", "")
-        gas_append("法人一覧シート", ["法人番号", "法人名", "住所", "電話番号", "メールアドレス"], [number, hojin_name, address, phone_number, email])
+        # Yoom側が後から050番号を埋めるため、電話番号列は空欄で送信
+        gas_append("法人一覧シート", ["法人番号", "法人名", "住所", "電話番号", "メールアドレス"], [number, hojin_name, address, "", email])
         await query.message.reply_text(
             f"🎉 **登録完了！**
 
 "
             f"🏢 法人名: `{hojin_name}`
 "
-            f"📞 050番号: `{phone_number}`
-"
             f"📧 メール: `{email}`
 
 "
-            f"スプレッドシートに書き込みました！",
+            f"スプレッドシートに基本情報を書き込みました。
+※この後、自動でIVRyの登録と050発番が行われます。",
             parse_mode="Markdown"
         )
     except Exception as e:
