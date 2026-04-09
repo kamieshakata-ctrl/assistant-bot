@@ -169,141 +169,10 @@ CRYPTO_SELL_CONFIRM = 503  # ETH売却確認
 CRYPTO_WITHDRAW_AMOUNT = 504  # JPY出金額入力
 CRYPTO_WITHDRAW_CONFIRM = 505  # JPY出金確認
 
-HOJIN_NAME = 601
-HOJIN_CONFIRM = 602
+
 
 
 # ── Google Apps Script helpers ────────────────────────────────────────────
-
-# ── 新規法人登録機能 ───────────────────────────────────────────────────────
-import random
-import string
-
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
-
-def _generate_twilio_050() -> str:
-    """Twilio APIを使って050番号を取得する。未設定やエラーの場合はダミーを返す"""
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        return f"050-{random.randint(1000,9999)}-{random.randint(1000,9999)} (Twilio未設定)"
-    
-    try:
-        # 実際にはここにTwilioのAvailablePhoneNumbers/JP/Local検索と購入APIが入る
-        # ※購入にはRegulatory Bundle (IdentitySid/AddressSid) が必要なため、今回はモック実装
-        return f"050-{random.randint(1000,9999)}-{random.randint(1000,9999)} (Twilio API連携準備中)"
-    except Exception as e:
-        logger.error(f"Twilio API Error: {e}")
-        return "取得エラー"
-
-async def start_hojin_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(
-        "🏢 **新規法人の登録**
-
-登録する「法人名」を入力してください。
-(例: 株式会社〇〇)",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("キャンセル", callback_data="hojin_cancel")]])
-    )
-    return HOJIN_NAME
-
-async def hojin_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    
-    # パース処理 (法人番号、名前、住所、最終更新日)
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    
-    number = ""
-    name = ""
-    address = ""
-    
-    for i, line in enumerate(lines):
-        if line.startswith("法人番号："):
-            number = line.replace("法人番号：", "").replace(" ", "")
-            # 通常、次の行が法人名、その次が住所
-            if i + 1 < len(lines):
-                # 法人名とフリガナがスペースで区切られている場合の処理
-                name_parts = lines[i+1].split()
-                if len(name_parts) > 1 and "アーカイブ" in name_parts: # 特殊ケース対応
-                   name = name_parts[-1] 
-                else:
-                   name = lines[i+1]
-            if i + 2 < len(lines) and not lines[i+2].startswith("最終更新"):
-                address = lines[i+2]
-            break
-            
-    # もしパースに失敗したら、全体を名前として扱うフォールバック
-    if not name:
-        name = lines[0] if lines else "不明な法人"
-        
-    context.user_data["hojin_name"] = name
-    context.user_data["hojin_number"] = number
-    context.user_data["hojin_address"] = address
-    
-    # kamies.net の捨てメアドを自動生成 (API不要のCatch-all方式)
-    random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    email = f"{random_str}@kamies.net"
-    context.user_data["hojin_email"] = email
-    
-    await update.message.reply_text(
-        f"以下の内容で登録・発番しますか？
-
-"
-        f"🏢 法人名: `{hojin_name}`
-"
-        f"📧 メール: `{email}`
-"
-        f"📞 電話番号: `Twilioから自動発番(050)`
-
-"
-        f"よろしければ「発行する」を押してください。",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ 発行してシートに記録", callback_data="hojin_submit")],
-            [InlineKeyboardButton("❌ キャンセル", callback_data="hojin_cancel")]
-        ])
-    )
-    return HOJIN_CONFIRM
-
-async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "hojin_cancel":
-        await query.message.reply_text("❌ 法人登録をキャンセルしました。")
-        return ConversationHandler.END
-        
-    await query.message.reply_text("⏳ 登録情報をシートに書き込んでいます...")
-    
-    hojin_name = context.user_data.get("hojin_name", "不明な法人")
-    email = context.user_data.get("hojin_email", "")
-    
-    # スプレッドシートに書き込み (法人一覧シートと仮定)
-    try:
-        number = context.user_data.get("hojin_number", "")
-        address = context.user_data.get("hojin_address", "")
-        # Yoom側が後から050番号を埋めるため、電話番号列は空欄で送信
-        gas_append("法人一覧シート", ["法人番号", "法人名", "住所", "電話番号", "メールアドレス"], [number, hojin_name, address, "", email])
-        await query.message.reply_text(
-            f"🎉 **登録完了！**
-
-"
-            f"🏢 法人名: `{hojin_name}`
-"
-            f"📧 メール: `{email}`
-
-"
-            f"スプレッドシートに基本情報を書き込みました。
-※この後、自動でIVRyの登録と050発番が行われます。",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Sheet append error: {e}")
-        await query.message.reply_text(f"❌ シートへの書き込みに失敗しました。
-エラー: {e}")
-
-    return ConversationHandler.END
 
 def gas_read(sheet_name: str) -> list:
     """Apps Script経由でシートのデータを取得する"""
@@ -550,7 +419,6 @@ async def staff_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # スタッフ用インラインボタンメニュー
     inline_keyboard = []
-    inline_keyboard.append([InlineKeyboardButton("🏢 新規法人を登録 (050/Email発行)", callback_data="menu_hojin")])
     inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
     inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
     inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
@@ -1307,8 +1175,7 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/menuコマンドやキーボードボタンからインラインメニューを表示する"""
     inline_keyboard = []
     if _is_meishi_allowed(update):
-        inline_keyboard.append([InlineKeyboardButton("🏢 新規法人を登録 (050/Email発行)", callback_data="menu_hojin")])
-    inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
+        inline_keyboard.append([InlineKeyboardButton("🪦 名刺の自動作成", callback_data="menu_meishi")])
     inline_keyboard.append([InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")])
     inline_keyboard.append([InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")])
     inline_markup = InlineKeyboardMarkup(inline_keyboard)
@@ -1988,21 +1855,6 @@ def main() -> None:
     ))
 
 
-    # 法人登録 ConversationHandler
-    hojin_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_hojin_register, pattern="^menu_hojin$")],
-        states={
-            HOJIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, hojin_name_input)],
-            HOJIN_CONFIRM: [CallbackQueryHandler(hojin_submit_callback, pattern="^hojin_")],
-        },
-        fallbacks=[
-            CommandHandler("cancel", lambda u, c: (u.message.reply_text("❌ キャンセルしました"), ConversationHandler.END)[1]),
-            CallbackQueryHandler(menu_callback, pattern="^menu_"),
-            CallbackQueryHandler(lambda u,c: (u.callback_query.message.reply_text("キャンセルしました"), ConversationHandler.END)[1], pattern="^hojin_cancel$")
-        ],
-        per_user=True, per_chat=True, allow_reentry=True
-    )
-    app.add_handler(hojin_conv)
     # 名刺作成 ConversationHandler
     meishi_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_meishi, pattern="^menu_meishi$")],
