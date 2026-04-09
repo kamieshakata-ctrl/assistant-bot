@@ -139,6 +139,30 @@ def split_hojin_name(hojin_name: str):
     return None, hojin_name
 
 
+
+def _get_zipcode_from_address(address: str) -> str:
+    """住所のテキストから郵便番号をスクレイピングで検索する（作戦B：裏技）"""
+    if not address or len(address) < 3:
+        return ""
+        
+    try:
+        query = address[:15] # 都道府県・市区町村・町域あたりまでを検索クエリにする
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        url = f"https://www.google.com/search?q={requests.utils.quote(query + ' 郵便番号')}"
+        resp = requests.get(url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = soup.get_text()
+            # Googleの検索結果から「〒123-4567」または「123-4567」の形式を探す
+            match = re.search(r'〒?([0-9]{3}-[0-9]{4})', text)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        print(f"Zipcode scrape error: {e}")
+        
+    return ""
+
 def create_business_card(
     hojin_name: str,
     tel: str = "",
@@ -213,7 +237,9 @@ def create_business_card(
     if tel:
         info_items.append(("TEL", tel))
     if address:
-        info_items.append(("住所", address))
+        zipcode = _get_zipcode_from_address(address)
+        display_address = f"〒{zipcode} {address}" if zipcode else address
+        info_items.append(("住所", display_address))
     info_items.append(("MAIL", email))
 
     for label, value in info_items:
@@ -241,4 +267,6 @@ if __name__ == "__main__":
     with open("/tmp/test_meishi.png", "wb") as f:
         f.write(data)
     print("Generated: /tmp/test_meishi.png")
-    print("Email:", generate_email("一般社団法人アートフォーラムNOAN"))
+    print("Email:", generate_email("一般社団法人アートフォーラムNOAN"))import requests
+from bs4 import BeautifulSoup
+
