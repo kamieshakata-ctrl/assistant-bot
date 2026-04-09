@@ -284,19 +284,9 @@ async def hojin_submit_callback(update: Update, context: ContextTypes.DEFAULT_TY
     phone_number = "取得エラー"
     
     # ── Playwrightによるアイブリー自動操作 (仮実装・要調整) ──
-    try:
-        # async with async_playwright() as p:
-        #     browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        #     page = await browser.new_page()
-        #     await page.goto("https://ivry.jp/")
-        #     await page.fill('input[type="email"]', email)
-        #     await page.click('text="無料で試す"')
-        #     await page.wait_for_timeout(3000)
-        #     await browser.close()
-        phone_number = "050-XXXX-XXXX (ブラウザ機能調整中)"
-    except Exception as e:
-        logger.error(f"Playwright Error: {e}")
-        phone_number = f"自動化エラー: {e}"
+    # Yoom連携により自動取得する前提のためダミーを格納
+    phone_number = "Yoomで発番待ち"
+
     # ────────────────────────────────────────────────────────
     
     # スプレッドシートに書き込み (法人一覧シートと仮定)
