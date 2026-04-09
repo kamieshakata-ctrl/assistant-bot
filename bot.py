@@ -262,23 +262,30 @@ def _make_reply_keyboard() -> ReplyKeyboardMarkup:
     """常時表示するキーボードメニューを生成する"""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("🏦 支払い依頼"), KeyboardButton("📝 稼働データ入力")],
-            [KeyboardButton("📋 メニューを表示")],
+            [KeyboardButton("📝 利用者登録"), KeyboardButton("📋 申請フォーム")],
+            [KeyboardButton("⚙️ スタッフ用メニュー")],
         ],
         resize_keyboard=True,
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # 一般ユーザー向け：代行登録ボタン + FAQ + 経費・持ち物
+    # 一般ユーザー向け：利用者登録 + 申請フォーム + スタッフ用メニュー
     welcome_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 代行登録フォーム", callback_data="menu_register")],
+        [InlineKeyboardButton("📝 利用者登録", callback_data="menu_register")],
+        [InlineKeyboardButton("📋 申請フォーム", callback_data="menu_apply_forms")],
+        [InlineKeyboardButton("⚙️ スタッフ用メニュー", callback_data="menu_staff_check")],
         [InlineKeyboardButton("❓ よくある質問", callback_data="faq_top")],
         [InlineKeyboardButton("💰 経費・持ち物について", callback_data="faq_expenses")],
     ])
     await update.message.reply_text(
         WELCOME_MESSAGE,
         reply_markup=welcome_markup,
+    )
+    
+    await update.message.reply_text(
+        "↓ ショートカットメニューを設置しました。",
+        reply_markup=_make_reply_keyboard(),
     )
 
     # お仕事の流れインフォグラフィック画像を送信
@@ -456,7 +463,22 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.answer()
     data = query.data
 
-    if data == "menu_meishi":
+    if data == "menu_staff_check":
+        if not _is_meishi_allowed(update):
+            await query.message.reply_text("❌ このメニューは許可されたスタッフのみアクセス可能です。")
+            return
+        await staff_menu(update, context)
+        return
+    elif data == "menu_apply_forms":
+        # 申請フォームのサブメニュー
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")],
+            [InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")],
+            [InlineKeyboardButton("⬅️ 戻る", callback_data="faq_back_start")]
+        ])
+        await query.message.reply_text("📋 **申請フォーム**\n\nどちらの申請を行いますか？", reply_markup=markup, parse_mode="Markdown")
+        return
+    elif data == "menu_meishi":
         # 許可ユーザー以外は拒否
         if not _is_meishi_allowed(update):
             await query.answer("この機能は利用できません。", show_alert=True)
@@ -1860,10 +1882,27 @@ def main() -> None:
     # /staff コマンド
     app.add_handler(CommandHandler("staff", staff_menu))
 
-    # キーボード「📋 メニューを表示」ボタンのハンドラ（インラインメニューを表示）
+    # キーボードボタンのハンドラ
+    async def keyboard_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
+        text = u.message.text
+        if text == "📝 利用者登録":
+            await start_register(u, c)
+        elif text == "📋 申請フォーム":
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏦 支払い依頼フォーム", callback_data="menu_transfer")],
+                [InlineKeyboardButton("📝 稼働データ入力フォーム", callback_data="menu_report")],
+                [InlineKeyboardButton("⬅️ 戻る", callback_data="faq_back_start")]
+            ])
+            await u.message.reply_text("📋 **申請フォーム**\n\nどちらの申請を行いますか？", reply_markup=markup, parse_mode="Markdown")
+        elif text == "⚙️ スタッフ用メニュー":
+            if not _is_meishi_allowed(u):
+                await u.message.reply_text("❌ このメニューは許可されたスタッフのみアクセス可能です。")
+                return
+            await staff_menu(u, c)
+
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"^📋 メニューを表示$"),
-        show_menu,
+        filters.TEXT & filters.Regex(r"^(📝 利用者登録|📋 申請フォーム|⚙️ スタッフ用メニュー)$"),
+        keyboard_handler,
     ))
 
 
