@@ -267,6 +267,7 @@ if __name__ == "__main__":
     with open("/tmp/test_meishi.png", "wb") as f:
         f.write(data)
     print("Generated: /tmp/test_meishi.png")
-    print("Email:", generate_email("一般社団法人アートフォーラムNOAN"))import requests
+    print("Email:", generate_email("一般社団法人アートフォーラムNOAN"))
+import requests
 from bs4 import BeautifulSoup
 
